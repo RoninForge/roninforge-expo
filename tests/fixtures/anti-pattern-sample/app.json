@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "AntiPatternSample",
+    "slug": "anti-pattern-sample",
+    "version": "1.0.0",
+    "jsEngine": "hermes",
+    "newArchEnabled": true,
+    "experiments": { "bridgeless": true },
+    "runtimeVersion": "1.0.0",
+    "ios": { "bundleIdentifier": "com.example.anti" },
+    "android": { "package": "com.example.anti" },
+    "extra": {}
+  }
+}

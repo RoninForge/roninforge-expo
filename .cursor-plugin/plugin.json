@@ -1,0 +1,33 @@
+{
+  "name": "roninforge-expo",
+  "version": "1.0.0",
+  "description": "Expo SDK 55 (React Native 0.83, React 19.2, New Architecture only, Expo Router 55, Reanimated 4 with react-native-worklets plugin, FlashList 2) Cursor plugin: 45+ anti-patterns, 10 rules, 5 skills, reviewer agent, correct + anti-pattern fixtures, validator. Catches the SDK 51-54 leftovers (Camera legacy export, NavigationContainer inside Router, useAnimatedGestureHandler, react-native-reanimated/plugin in babel, AsyncStorage for tokens, expo-cli, expo install, react-native-fast-image, expo-permissions, expo-av, FlashList v1 estimatedItemSize, expo-file-system classic API, newArchEnabled flag, react-native-vector-icons, react-native-fs) that pre-Oct-2024 LLMs still produce in an SDK 55 project.",
+  "author": {
+    "name": "RoninForge",
+    "url": "https://roninforge.org"
+  },
+  "homepage": "https://github.com/RoninForge/roninforge-expo",
+  "repository": "https://github.com/RoninForge/roninforge-expo",
+  "license": "MIT",
+  "categories": [
+    "framework",
+    "react-native",
+    "expo",
+    "mobile",
+    "typescript"
+  ],
+  "keywords": [
+    "expo",
+    "expo-sdk-55",
+    "react-native",
+    "expo-router",
+    "reanimated",
+    "flash-list",
+    "eas",
+    "cng",
+    "new-architecture",
+    "typescript",
+    "anti-patterns",
+    "mobile"
+  ]
+}

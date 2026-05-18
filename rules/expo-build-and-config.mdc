@@ -1,0 +1,158 @@
+---
+description: Build and configuration discipline for Expo SDK 55. Use app.config.ts (TypeScript, env-driven) over app.json, register native modules via the plugins array, use expo-build-properties for native build settings, never hand-edit ios/ or android/ folders (CNG wipes them on prebuild --clean), set runtimeVersion to {policy "fingerprint"} so EAS Update gates JS bundles to matching native shells, use eas.json profiles (development, preview, production) with cli.appVersionSource "remote", do NOT set newArchEnabled or jsEngine (no-ops in SDK 55; New Architecture is the only mode and Hermes is the default), use npx expo install (not expo install) so versions match the SDK compatibility matrix.
+globs: app.config.{ts,js},app.json,eas.json,babel.config.{js,ts},metro.config.{js,ts},plugins/**,package.json
+alwaysApply: false
+---
+
+# Expo SDK 55 Build and Config
+
+## app.config.ts > app.json
+
+Static JSON cannot read `process.env`. Almost every real project needs env-driven values.
+
+```ts
+// app.config.ts
+import { ExpoConfig } from "expo/config";
+
+const config: ExpoConfig = {
+  name: "MyApp",
+  slug: "myapp",
+  scheme: "myapp",
+  version: "1.0.0",
+  runtimeVersion: { policy: "fingerprint" },
+  orientation: "portrait",
+  icon: "./assets/images/icon.png",
+  ios: {
+    bundleIdentifier: "com.example.myapp",
+    supportsTablet: true,
+  },
+  android: {
+    package: "com.example.myapp",
+    adaptiveIcon: { foregroundImage: "./assets/images/adaptive-icon.png" },
+  },
+  plugins: [
+    "expo-router",
+    "expo-secure-store",
+    [
+      "expo-splash-screen",
+      { image: "./assets/images/splash.png", resizeMode: "contain", backgroundColor: "#ffffff" },
+    ],
+    [
+      "expo-build-properties",
+      { ios: { deploymentTarget: "15.1" }, android: { compileSdkVersion: 35, targetSdkVersion: 35 } },
+    ],
+  ],
+  experiments: { typedRoutes: true },
+  extra: {
+    apiBase: process.env.API_BASE,
+    eas: { projectId: process.env.EAS_PROJECT_ID },
+  },
+};
+
+export default config;
+```
+
+Notice the omissions: no `newArchEnabled`, no `jsEngine`. SDK 55 dropped Legacy Architecture; Hermes is default. See anti-patterns #38, #39.
+
+See anti-pattern #42 (`app.json` only).
+
+Source: https://docs.expo.dev/workflow/configuration/
+
+## CNG: Continuous Native Generation
+
+`ios/` and `android/` are regenerated from `app.config.ts` + plugins on every `npx expo prebuild --clean`. Anything you hand-edit is wiped. See anti-pattern #19.
+
+If you must change native config, write a config plugin:
+
+```ts
+// plugins/withCustomEntitlement.ts
+import { ConfigPlugin, withEntitlementsPlist } from "expo/config-plugins";
+const withCustomEntitlement: ConfigPlugin = (config) =>
+  withEntitlementsPlist(config, (cfg) => {
+    cfg.modResults["com.apple.developer.applesignin"] = ["Default"];
+    return cfg;
+  });
+export default withCustomEntitlement;
+```
+
+Then add `"./plugins/withCustomEntitlement"` to the `plugins` array.
+
+Source: https://docs.expo.dev/workflow/continuous-native-generation/
+
+## runtimeVersion: fingerprint policy
+
+```ts
+runtimeVersion: { policy: "fingerprint" }
+```
+
+Hashes all native inputs. EAS Update only delivers JS to clients whose native shell matches the fingerprint. Native dep bump = automatic version bump. See anti-pattern #17.
+
+Source: https://docs.expo.dev/eas-update/runtime-versions/
+
+## eas.json profiles
+
+```json
+{
+  "cli": { "version": ">= 18.13.0", "appVersionSource": "remote" },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": { "API_BASE": "http://localhost:3000" }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": { "API_BASE": "https://staging-api.example.com" }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": { "API_BASE": "https://api.example.com" }
+    }
+  },
+  "submit": { "production": {} }
+}
+```
+
+Source: https://docs.expo.dev/eas/json/
+
+## package scripts
+
+```json
+{
+  "scripts": {
+    "start": "npx expo start",
+    "android": "npx expo run:android",
+    "ios": "npx expo run:ios",
+    "lint": "expo lint",
+    "build:android": "eas build -p android --profile production",
+    "build:ios": "eas build -p ios --profile production",
+    "submit:android": "eas submit -p android",
+    "submit:ios": "eas submit -p ios",
+    "update": "eas update --auto"
+  }
+}
+```
+
+No `expo build:android`, no `expo install`, no `expo-cli` dependency. See anti-pattern #12.
+
+## Installing packages
+
+Always:
+
+```sh
+npx expo install <pkg>
+```
+
+Not `npm install <pkg>` (versions may not match SDK matrix) and not `expo install <pkg>` (the global `expo-cli` is removed).
+
+Source: https://docs.expo.dev/get-started/start-developing/
+
+## Refuses
+
+- `app.json` only (no `app.config.ts`) when env vars are needed (see #42)
+- Manual edits in `ios/` or `android/` after `prebuild` (see #19)
+- `"newArchEnabled": true` or `"bridgeless": true` (see #39)
+- `"jsEngine": "hermes"` (no-op; see #38)
+- `"runtimeVersion": "1.0.0"` (static string; see #17)
+- `"expo build:android"` script (removed; see #12)
+- `"expo-cli"` in dependencies (see #12)

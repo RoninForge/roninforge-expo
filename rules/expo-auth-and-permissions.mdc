@@ -1,0 +1,123 @@
+---
+description: Authentication and runtime permissions for Expo SDK 55. PKCE via expo-auth-session (NEVER a client_secret), expo-apple-authentication on iOS, per-module permission APIs (useCameraPermissions from expo-camera, requestForegroundPermissionsAsync from expo-location, etc.), Stack.Protected for declarative auth gating in the router. Refuses expo-permissions (removed since SDK 41), useEffect + router.replace for auth redirects (use Stack.Protected), OAuth client_secret in bundle, JWT in AsyncStorage.
+globs: app/**/*.{ts,tsx},lib/**/*.{ts,tsx},src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Expo SDK 55 Auth and Permissions
+
+## OAuth with PKCE
+
+```tsx
+import * as AuthSession from "expo-auth-session";
+import * as WebBrowser from "expo-web-browser";
+
+WebBrowser.maybeCompleteAuthSession();
+
+const discovery = {
+  authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+  tokenEndpoint: "https://oauth2.googleapis.com/token",
+};
+
+export function useGoogleSignIn() {
+  const [request, response, promptAsync] = AuthSession.useAuthRequest(
+    {
+      clientId: process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID!,
+      scopes: ["openid", "profile", "email"],
+      redirectUri: AuthSession.makeRedirectUri({ scheme: "myapp" }),
+      usePKCE: true,
+    },
+    discovery,
+  );
+  return { request, response, promptAsync };
+}
+```
+
+`scheme` must be set in `app.config.ts` (see anti-pattern #16).
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/auth-session/
+
+## Apple Sign-In
+
+```tsx
+import * as AppleAuthentication from "expo-apple-authentication";
+
+const credential = await AppleAuthentication.signInAsync({
+  requestedScopes: [
+    AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+    AppleAuthentication.AppleAuthenticationScope.EMAIL,
+  ],
+});
+```
+
+Required when your app uses any third-party social sign-in (Apple App Store guideline 4.8).
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/apple-authentication/
+
+## Token storage
+
+Always `expo-secure-store`. Never `AsyncStorage`. See anti-pattern #1.
+
+```ts
+import * as SecureStore from "expo-secure-store";
+await SecureStore.setItemAsync("refresh_token", refresh);
+```
+
+## Per-module permissions
+
+`expo-permissions` was removed (anti-pattern #20). Each module exposes its own permission API.
+
+```ts
+// Camera
+import { useCameraPermissions } from "expo-camera";
+const [permission, requestPermission] = useCameraPermissions();
+
+// Location
+import * as Location from "expo-location";
+const { status } = await Location.requestForegroundPermissionsAsync();
+
+// Media library
+import * as MediaLibrary from "expo-media-library";
+await MediaLibrary.requestPermissionsAsync();
+
+// Notifications
+import * as Notifications from "expo-notifications";
+await Notifications.requestPermissionsAsync();
+```
+
+Source: https://docs.expo.dev/guides/permissions/
+
+## Declarative auth gating: Stack.Protected
+
+Replaces the `useEffect + router.replace` redirect (anti-pattern #33).
+
+```tsx
+// app/_layout.tsx
+import { Stack } from "expo-router";
+import { useSession } from "../lib/auth";
+
+export default function RootLayout() {
+  const { session, loading } = useSession();
+  if (loading) return null; // splash
+  return (
+    <Stack>
+      <Stack.Protected guard={!!session}>
+        <Stack.Screen name="(app)" />
+      </Stack.Protected>
+      <Stack.Protected guard={!session}>
+        <Stack.Screen name="(auth)" />
+      </Stack.Protected>
+    </Stack>
+  );
+}
+```
+
+Source: https://docs.expo.dev/router/advanced/authentication/
+
+## Refuses
+
+- `import * as Permissions from "expo-permissions"` (see #20)
+- `useEffect(() => { if (!session) router.replace(...) }, ...)` (see #33)
+- Hardcoded `client_secret` for OAuth (see #3)
+- `AsyncStorage.setItem("refresh_token", ...)` (see #1)
+- `EXPO_PUBLIC_GOOGLE_CLIENT_SECRET` (see #2)

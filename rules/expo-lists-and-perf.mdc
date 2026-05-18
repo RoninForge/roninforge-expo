@@ -1,0 +1,67 @@
+---
+description: List rendering and performance for Expo SDK 55. FlashList 2.0.2 is the canonical large-list component (auto-measures, no estimatedItemSize). Use keyExtractor for stable identity, getItemType for mixed item types, drawDistance for prefetch. FlatList is acceptable for short static lists (under ~50 items). Refuses FlashList 1.x estimatedItemSize carryover (no-op in v2), FlatList for 200+ items, missing keyExtractor.
+globs: app/**/*.{ts,tsx},components/**/*.{ts,tsx},src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Expo SDK 55 Lists and Performance
+
+SDK 55 pins `@shopify/flash-list` 2.0.2.
+
+## FlashList 2.x
+
+```tsx
+import { FlashList } from "@shopify/flash-list";
+
+type Post = { id: string; title: string };
+
+export default function Feed({ posts }: { posts: Post[] }) {
+  return (
+    <FlashList
+      data={posts}
+      keyExtractor={(item) => item.id}
+      renderItem={({ item }) => <PostRow item={item} />}
+    />
+  );
+}
+```
+
+Differences from v1:
+
+- `estimatedItemSize` is a no-op (auto-measured). Remove it.
+- `estimatedFirstItemOffset` is gone.
+- The internals run on a single recycler engine; mixed lists need `getItemType`.
+
+```tsx
+<FlashList
+  data={mixed}
+  keyExtractor={(it) => it.id}
+  getItemType={(it) => it.kind} // "header" | "post" | "ad"
+  renderItem={({ item }) => {
+    if (item.kind === "header") return <Header />;
+    if (item.kind === "ad") return <Ad />;
+    return <PostRow item={item} />;
+  }}
+/>
+```
+
+See anti-patterns #23, #32.
+
+Source: https://shopify.github.io/flash-list/docs/v2-changes
+
+## When FlatList is fine
+
+`FlatList` is acceptable for SHORT static lists (under ~50 items, fixed-height rows, no scrolling pressure). For anything user-scrollable past a few screens, use FlashList. See anti-pattern #31.
+
+## Heuristics
+
+- Always supply `keyExtractor`. Without it, React keys default to index and recycling thrashes.
+- Avoid inline arrow functions in `renderItem` if items are visually expensive; memoize the row component.
+- Do not put `ScrollView` around a `FlashList`. The list is already virtualized.
+- For sticky headers in FlashList 2, use `stickyHeaderIndices` + `getItemType`.
+
+## Refuses
+
+- `<FlashList estimatedItemSize={...} />` on v2 (no-op; remove; see #32)
+- `<FlatList data={items} />` for `items.length > 200` (use FlashList; see #31)
+- Missing `keyExtractor`

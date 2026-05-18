@@ -1,0 +1,59 @@
+---
+description: TypeScript and tsconfig setup for Expo SDK 55. Extend expo/tsconfig.base to get Metro-aligned moduleResolution, JSX runtime, and the typed-routes types under .expo/types/router.d.ts. Enable experiments.typedRoutes in app.config.ts. Type useLocalSearchParams<T>(). Refuse a tsconfig that does not extend expo/tsconfig.base, untyped useLocalSearchParams, route params accessed via any.
+globs: tsconfig*.json,app/**/*.{ts,tsx},app.config.{ts,js}
+alwaysApply: false
+---
+
+# Expo SDK 55 TypeScript
+
+## tsconfig.json
+
+```json
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": { "@/*": ["./*"] }
+  },
+  "include": [".expo/types/**/*.ts", "expo-env.d.ts", "**/*.ts", "**/*.tsx"]
+}
+```
+
+`expo/tsconfig.base` aligns `moduleResolution`, `jsx`, and library typings with Metro. Without it, you lose typed routes and may hit JSX runtime mismatches. See anti-pattern #44.
+
+Source: https://docs.expo.dev/guides/typescript/
+
+## Typed routes
+
+Enable in `app.config.ts`:
+
+```ts
+experiments: { typedRoutes: true }
+```
+
+After the next `npx expo start`, the router writes `.expo/types/router.d.ts`. With that file included, you get autocomplete + type errors on:
+
+- `<Link href="/post/[id]" />`
+- `router.push("/post/[id]")`
+- `useLocalSearchParams<{ id: string }>()`
+
+## useLocalSearchParams
+
+Always parameterize the type. Without it, `params.id` is `string | string[] | undefined` and silently fails on `.toLowerCase()` etc.
+
+```tsx
+const { id } = useLocalSearchParams<{ id: string }>();
+```
+
+See anti-patterns #34, #35.
+
+## Strict mode
+
+`"strict": true` is required. It enables `strictNullChecks` which is the only way to catch the params-undefined problem above without an explicit type guard.
+
+## Refuses
+
+- `tsconfig.json` that does not extend `expo/tsconfig.base` (see #44)
+- `useLocalSearchParams()` without a type parameter (see #35)
+- `useRoute()` from `@react-navigation/native` for params (see #34)
+- `"strict": false` in `compilerOptions`

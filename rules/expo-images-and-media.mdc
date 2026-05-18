@@ -1,0 +1,99 @@
+---
+description: Image and media APIs for Expo SDK 55. Use expo-image (with contentFit, cachePolicy, transition, placeholder) for all remote and local image content. Use CameraView (NOT the removed legacy Camera export) plus useCameraPermissions for camera. Use expo-video (useVideoPlayer + VideoView) for video and expo-audio for sound; expo-av is removed from Expo Go in SDK 55. Refuses Image from react-native for remote content, resizeMode on expo-image, react-native-fast-image, Camera from expo-camera, Video / Audio from expo-av.
+globs: app/**/*.{ts,tsx},components/**/*.{ts,tsx},src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Expo SDK 55 Images and Media
+
+## Images: expo-image
+
+`expo-image` is the supported image component. Faster than RN `Image`, supports blurhash placeholders, native transitions, memory + disk cache, priority queue, and SDWebImage on iOS.
+
+```tsx
+import { Image } from "expo-image";
+
+<Image
+  source={{ uri: "https://example.com/cat.jpg" }}
+  style={{ width: 200, height: 200 }}
+  contentFit="cover"
+  cachePolicy="memory-disk"
+  transition={200}
+  placeholder={require("../assets/blurhash.png")}
+/>;
+```
+
+Prop names that differ from RN `Image`:
+
+| RN `Image` | `expo-image` |
+|------------|--------------|
+| `resizeMode` | `contentFit` |
+| `defaultSource` | `placeholder` |
+| (none) | `transition`, `cachePolicy`, `priority`, `recyclingKey` |
+
+See anti-patterns #26 (raw `Image`), #27 (`resizeMode`), #28 (`react-native-fast-image`).
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/image/
+
+## Camera: CameraView
+
+The legacy `Camera` export was removed in SDK 52. Use `CameraView` + `useCameraPermissions`.
+
+```tsx
+import { CameraView, useCameraPermissions } from "expo-camera";
+
+export default function Scanner() {
+  const [permission, requestPermission] = useCameraPermissions();
+  if (!permission) return null;
+  if (!permission.granted) {
+    return <Button title="Grant camera" onPress={requestPermission} />;
+  }
+  return (
+    <CameraView
+      facing="back"
+      barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+      onBarcodeScanned={({ data }) => console.log(data)}
+      style={{ flex: 1 }}
+    />
+  );
+}
+```
+
+See anti-pattern #6.
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/camera/
+
+## Video: expo-video
+
+```tsx
+import { useVideoPlayer, VideoView } from "expo-video";
+
+export default function Player({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = true;
+    p.play();
+  });
+  return <VideoView player={player} style={{ flex: 1 }} contentFit="contain" allowsFullscreen />;
+}
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/video/
+
+## Audio: expo-audio
+
+```tsx
+import { useAudioPlayer } from "expo-audio";
+
+const player = useAudioPlayer(require("../assets/ding.mp3"));
+function ding() { player.seekTo(0); player.play(); }
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/audio/
+
+## Refuses
+
+- `import { Image } from "react-native"` for remote URIs (see #26)
+- `resizeMode` prop on `expo-image` (use `contentFit`; see #27)
+- `import FastImage from "react-native-fast-image"` (see #28)
+- `import { Camera } from "expo-camera"` (legacy export; use `CameraView`; see #6)
+- `import { Video, Audio } from "expo-av"` (use `expo-video` / `expo-audio`; see #25)

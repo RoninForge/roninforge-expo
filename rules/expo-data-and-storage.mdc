@@ -1,0 +1,125 @@
+---
+description: Storage discipline for Expo SDK 55. expo-secure-store for tokens and secrets (Keychain / Keystore backed), expo-sqlite with the async SQLiteProvider for relational data, expo-sqlite/kv-store as the AsyncStorage drop-in replacement, expo-file-system new File/Directory API (default in SDK 54+; classic API lives under expo-file-system/legacy), EXPO_PUBLIC_* env vars only for client-safe values (anything sensitive must go through EAS env or your server). Refuses AsyncStorage for tokens, EXPO_PUBLIC_*_SECRET, react-native-fs.
+globs: app/**/*.{ts,tsx},lib/**/*.{ts,tsx},src/**/*.{ts,tsx},.env*,app.config.{ts,js}
+alwaysApply: false
+---
+
+# Expo SDK 55 Data and Storage
+
+## Secrets and tokens: expo-secure-store
+
+Backed by iOS Keychain and Android EncryptedSharedPreferences. Use for JWTs, refresh tokens, OAuth tokens, biometric-gated secrets.
+
+```ts
+import * as SecureStore from "expo-secure-store";
+
+await SecureStore.setItemAsync("access_token", token, {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+});
+const token = await SecureStore.getItemAsync("access_token");
+await SecureStore.deleteItemAsync("access_token");
+```
+
+Never store secrets in `AsyncStorage` (see anti-pattern #1). 2 KB per item limit; for larger blobs, encrypt yourself with `expo-crypto` and store ciphertext in SQLite.
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/securestore/
+
+## KV cache: expo-sqlite/kv-store
+
+Drop-in replacement for `@react-native-async-storage/async-storage`. Same API, SQLite-backed, New-Architecture native.
+
+```ts
+import AsyncStorage from "expo-sqlite/kv-store";
+await AsyncStorage.setItem("preferred_theme", "dark");
+const theme = await AsyncStorage.getItem("preferred_theme");
+```
+
+Use for non-sensitive client preferences, feature flags, last-route memory.
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/async-storage/
+
+## Relational data: expo-sqlite + SQLiteProvider
+
+```tsx
+// app/_layout.tsx
+import { SQLiteProvider, useSQLiteContext } from "expo-sqlite";
+
+async function migrate(db: SQLiteDatabase) {
+  await db.execAsync(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, body TEXT);
+  `);
+}
+
+export default function RootLayout() {
+  return (
+    <SQLiteProvider databaseName="app.db" onInit={migrate}>
+      <Stack />
+    </SQLiteProvider>
+  );
+}
+
+// any screen
+const db = useSQLiteContext();
+const rows = await db.getAllAsync<{ id: string; body: string }>("SELECT * FROM posts");
+```
+
+Always use the async API (`execAsync`, `getAllAsync`, `runAsync`). The sync API blocks the JS thread.
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/sqlite/
+
+## Files: expo-file-system new API (default in SDK 54+)
+
+```ts
+import { File, Directory, Paths } from "expo-file-system";
+
+const file = new File(Paths.document, "notes.txt");
+await file.write("hello");
+const contents = await file.text();
+file.delete();
+
+const dir = new Directory(Paths.document, "uploads");
+dir.create({ intermediates: true });
+const files = dir.list();
+```
+
+The classic functional API (`FileSystem.writeAsStringAsync`, `FileSystem.documentDirectory`) is NOT the default anymore. To use it knowingly:
+
+```ts
+import * as FileSystem from "expo-file-system/legacy";
+```
+
+See anti-pattern #24.
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/filesystem/
+
+## Env vars: EXPO_PUBLIC_*
+
+Only use `EXPO_PUBLIC_*` for values that are SAFE to ship in the bundle (publishable keys, public OAuth client ids, feature flags). Never for secrets.
+
+```
+# .env
+EXPO_PUBLIC_API_BASE=https://api.example.com
+EXPO_PUBLIC_POSTHOG_KEY=phc_publishable
+```
+
+Read with `process.env.EXPO_PUBLIC_API_BASE` in any file.
+
+For non-public values, set via EAS:
+
+```sh
+eas env:create --scope=project --visibility=secret --name=API_TOKEN --value=...
+```
+
+Then access from `app.config.ts` `extra.*` for build-time injection, or from your server only.
+
+See anti-patterns #2 (EXPO_PUBLIC_*_SECRET), #4 (hardcoded URLs).
+
+Source: https://docs.expo.dev/guides/environment-variables/
+
+## Refuses
+
+- `AsyncStorage.setItem("access_token", ...)` and any token in `@react-native-async-storage/async-storage`
+- `EXPO_PUBLIC_STRIPE_SECRET`, `EXPO_PUBLIC_*_SECRET`, `EXPO_PUBLIC_API_KEY` for non-publishable keys
+- `import RNFS from "react-native-fs"` (use `expo-file-system`)
+- `FileSystem.documentDirectory` from `expo-file-system` (default export) without acknowledging it now lives under `/legacy`

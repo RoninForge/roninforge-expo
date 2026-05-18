@@ -1,0 +1,105 @@
+---
+description: Animations and gestures for Expo SDK 55. Reanimated 4 with the react-native-worklets/plugin (NOT react-native-reanimated/plugin), useSharedValue, useAnimatedStyle, useDerivedValue, withTiming, withSpring, useAnimatedReaction, runOnJS for crossing from worklet to JS thread. Gestures via react-native-gesture-handler 2.30 GestureDetector + Gesture.Pan / Gesture.Tap / Gesture.Pinch composed with Gesture.Simultaneous / Gesture.Race. Refuses useAnimatedGestureHandler (removed in Reanimated 4), reading shared value .value in render, setState from worklets without runOnJS, react-native Animated API for new code.
+globs: app/**/*.{ts,tsx},components/**/*.{ts,tsx},src/**/*.{ts,tsx},babel.config.{js,ts}
+alwaysApply: false
+---
+
+# Expo SDK 55 Animations and Gestures
+
+SDK 55 ships Reanimated 4.2.1 + react-native-worklets 0.7.4 + react-native-gesture-handler 2.30.0.
+
+## Babel plugin
+
+Reanimated 4 moved its Babel plugin into `react-native-worklets`. The old `react-native-reanimated/plugin` path is gone.
+
+```js
+// babel.config.js
+module.exports = function (api) {
+  api.cache(true);
+  return {
+    presets: ["babel-preset-expo"],
+    plugins: ["react-native-worklets/plugin"], // MUST be last
+  };
+};
+```
+
+See anti-pattern #10.
+
+## Shared values + animated styles
+
+```tsx
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withSpring,
+} from "react-native-reanimated";
+
+export default function Fade() {
+  const opacity = useSharedValue(0);
+  useEffect(() => { opacity.value = withTiming(1, { duration: 300 }); }, []);
+  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  return <Animated.View style={[style, { width: 80, height: 80, backgroundColor: "tomato" }]} />;
+}
+```
+
+Never read `value.value` in render (see anti-pattern #41). Always read inside a worklet (`useAnimatedStyle`, `useAnimatedProps`, `useDerivedValue`, `useAnimatedReaction`).
+
+Source: https://docs.swmansion.com/react-native-reanimated/docs/core/useSharedValue
+
+## Gestures: GestureDetector + Gesture.*
+
+The legacy `useAnimatedGestureHandler` is removed in Reanimated 4. Use the new gesture API.
+
+```tsx
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, { useSharedValue, useAnimatedStyle } from "react-native-reanimated";
+
+export default function Draggable() {
+  const x = useSharedValue(0);
+  const y = useSharedValue(0);
+  const start = useSharedValue({ x: 0, y: 0 });
+
+  const pan = Gesture.Pan()
+    .onStart(() => { start.value = { x: x.value, y: y.value }; })
+    .onUpdate((e) => {
+      x.value = start.value.x + e.translationX;
+      y.value = start.value.y + e.translationY;
+    });
+
+  const style = useAnimatedStyle(() => ({
+    transform: [{ translateX: x.value }, { translateY: y.value }],
+  }));
+
+  return (
+    <GestureDetector gesture={pan}>
+      <Animated.View style={[style, { width: 80, height: 80, backgroundColor: "steelblue" }]} />
+    </GestureDetector>
+  );
+}
+```
+
+Compose gestures with `Gesture.Simultaneous(a, b)` or `Gesture.Race(a, b)`.
+
+See anti-pattern #5.
+
+Source: https://docs.swmansion.com/react-native-gesture-handler/docs/gestures/gesture/
+
+## Crossing threads: runOnJS
+
+Worklets run on the UI thread. React state setters live on the JS thread. Wrap them:
+
+```tsx
+import { runOnJS } from "react-native-reanimated";
+const pan = Gesture.Pan().onEnd(() => runOnJS(setOpen)(true));
+```
+
+See anti-pattern #45.
+
+## Refuses
+
+- `useAnimatedGestureHandler` (removed; see #5)
+- `react-native-reanimated/plugin` in `babel.config.js` (replaced by `react-native-worklets/plugin`; see #10)
+- Reading `sharedValue.value` in JSX render (see #41)
+- Calling React state setters directly from worklets (see #45)
+- `Animated.timing(...)` from `react-native` for new code (see #30)

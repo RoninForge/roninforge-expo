@@ -1,0 +1,1112 @@
+---
+description: Centerpiece catalog of 45 Expo SDK 55 anti-patterns grouped by severity (CRIT, ERR, WARN, NIT). Covers SDK 51-54 leftovers that pre-Oct-2024 LLMs still emit: Camera legacy export, NavigationContainer inside Expo Router, useAnimatedGestureHandler, react-native-reanimated/plugin in babel, AsyncStorage for tokens, expo-cli, react-native-fast-image, expo-permissions, expo-av, FlashList v1 estimatedItemSize, expo-file-system classic API assumed default, EXPO_PUBLIC_*_SECRET, manual ios/android edits, useEffect auth redirects, raw react-native Image for remote content, enableHermes / jsEngine / bridgeless / newArchEnabled noise, missing _layout, splash never hidden, runtimeVersion not fingerprint policy, push notifications in Expo Go on Android, untyped useLocalSearchParams, useRoute/useNavigation in Expo Router, react-native-vector-icons, react-native-fs, edge-to-edge statusbar overlap, reading sharedValue.value in render, setState from worklet without runOnJS, expo install (use npx expo install), legacy auth libraries paired with bare RN, OAuth secrets in bundles, hardcoded API base URLs, app.json over app.config.ts, useFonts without render gate, tsconfig not extending expo/tsconfig.base, missing expo-notifications plugin entry, missing scheme for OAuth, router.navigate replacing stack semantics (use dismissTo).
+globs: app/**/*.{ts,tsx},components/**/*.{ts,tsx},lib/**/*.{ts,tsx},src/**/*.{ts,tsx},app.config.{ts,js},app.json,babel.config.{js,ts},metro.config.{js,ts},eas.json,package.json
+alwaysApply: false
+---
+
+# Expo SDK 55 Anti-Patterns
+
+Catalog of 45 anti-patterns. Severity:
+
+- **CRIT** ships secrets, breaks production
+- **ERR** wrong API, build/runtime breaks on SDK 55
+- **WARN** outdated pattern, works but suboptimal
+- **NIT** quality issue, easy to ignore but easy to fix
+
+Pinned target: Expo SDK 55 (May 2026), React Native 0.83.6, React 19.2.0, Expo Router 55.0.x, Reanimated 4.2.x with `react-native-worklets/plugin`, FlashList 2.0.x, FileSystem new `File`/`Directory` API, New Architecture only (Legacy Architecture removed).
+
+Sources: https://expo.dev/changelog/sdk-55, https://docs.expo.dev/, https://github.com/software-mansion/react-native-reanimated, https://shopify.github.io/flash-list.
+
+---
+
+## CRIT
+
+### 1. jwt-in-asyncstorage
+
+**Severity:** CRIT
+
+**Tempting:**
+
+```tsx
+import AsyncStorage from "@react-native-async-storage/async-storage";
+await AsyncStorage.setItem("access_token", token);
+```
+
+**Why wrong:** `AsyncStorage` is plain unencrypted JSON on disk. On a rooted Android device or any tooling that can read app sandbox, the token is readable. Tokens belong in the Keychain (iOS) / Keystore (Android).
+
+**Canonical:**
+
+```tsx
+import * as SecureStore from "expo-secure-store";
+await SecureStore.setItemAsync("access_token", token, {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+});
+const token = await SecureStore.getItemAsync("access_token");
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/securestore/
+
+### 2. expo-public-secret
+
+**Severity:** CRIT
+
+**Tempting:**
+
+```ts
+// .env
+EXPO_PUBLIC_STRIPE_SECRET=sk_live_abc
+```
+
+**Why wrong:** Any env var prefixed `EXPO_PUBLIC_` is inlined into the JS bundle at build time and shipped to every install. Bundle is trivially extractable from the IPA / APK. Secrets MUST stay server-side.
+
+**Canonical:**
+
+```ts
+// app.config.ts
+export default {
+  expo: {
+    extra: {
+      apiBase: process.env.API_BASE,
+    },
+  },
+};
+```
+
+Then set non-public vars in EAS Secrets (`eas env:create --scope=project --visibility=secret`) and read them in your server only. Mobile clients call your server, not Stripe directly.
+
+Source: https://docs.expo.dev/guides/environment-variables/
+
+### 3. oauth-secret-in-bundle
+
+**Severity:** CRIT
+
+**Tempting:**
+
+```ts
+const config = {
+  clientId: "abc",
+  clientSecret: "xyz", // hardcoded
+};
+```
+
+**Why wrong:** Mobile clients are public; a `client_secret` shipped in the binary becomes a public credential. The OAuth 2.0 spec for public clients (RFC 8252) requires PKCE instead of `client_secret`.
+
+**Canonical:**
+
+```ts
+import * as AuthSession from "expo-auth-session";
+const [request, response, promptAsync] = AuthSession.useAuthRequest(
+  {
+    clientId: process.env.EXPO_PUBLIC_OAUTH_CLIENT_ID!,
+    scopes: ["openid", "profile"],
+    redirectUri: AuthSession.makeRedirectUri({ scheme: "myapp" }),
+    usePKCE: true,
+  },
+  discovery,
+);
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/auth-session/
+
+### 4. hardcoded-api-base-url
+
+**Severity:** CRIT
+
+**Tempting:**
+
+```ts
+fetch("https://staging-api.acme.dev/v1/users");
+```
+
+**Why wrong:** Staging URLs ship to production builds. Production builds hit staging databases. EAS `production` and `preview` profiles need distinct env values per build.
+
+**Canonical:**
+
+```ts
+// app.config.ts
+extra: { apiBase: process.env.API_BASE }
+// usage
+import Constants from "expo-constants";
+const base = Constants.expoConfig?.extra?.apiBase as string;
+```
+
+Plus `eas.json` profiles:
+
+```json
+{
+  "build": {
+    "production": { "env": { "API_BASE": "https://api.acme.com" } },
+    "preview":    { "env": { "API_BASE": "https://staging-api.acme.dev" } }
+  }
+}
+```
+
+Source: https://docs.expo.dev/build-reference/variables/
+
+---
+
+## ERR
+
+### 5. useanimatedgesturehandler-removed
+
+**Severity:** ERR
+
+**Tempting:**
+
+```tsx
+import { useAnimatedGestureHandler } from "react-native-reanimated";
+const handler = useAnimatedGestureHandler({ onActive: (e, ctx) => { ... } });
+return <PanGestureHandler onGestureEvent={handler}>...</PanGestureHandler>;
+```
+
+**Why wrong:** `useAnimatedGestureHandler` and the imperative `PanGestureHandler` JSX wrappers are removed in Reanimated 4. SDK 55 ships Reanimated 4.2.1.
+
+**Canonical:**
+
+```tsx
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { useSharedValue, useAnimatedStyle } from "react-native-reanimated";
+
+const x = useSharedValue(0);
+const pan = Gesture.Pan().onUpdate((e) => {
+  x.value = e.translationX;
+});
+const style = useAnimatedStyle(() => ({ transform: [{ translateX: x.value }] }));
+return <GestureDetector gesture={pan}><Animated.View style={style} /></GestureDetector>;
+```
+
+Source: https://docs.swmansion.com/react-native-gesture-handler/docs/gestures/gesture/
+
+### 6. legacy-camera-import
+
+**Severity:** ERR
+
+**Tempting:**
+
+```tsx
+import { Camera } from "expo-camera";
+return <Camera ref={ref} type={Camera.Constants.Type.back} />;
+```
+
+**Why wrong:** The legacy `Camera` export and `Camera.Constants` were removed in SDK 52. SDK 55's `expo-camera` ships `CameraView` plus the `useCameraPermissions` hook.
+
+**Canonical:**
+
+```tsx
+import { CameraView, useCameraPermissions } from "expo-camera";
+const [permission, requestPermission] = useCameraPermissions();
+if (!permission?.granted) return <Button onPress={requestPermission} title="Allow" />;
+return <CameraView facing="back" />;
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/camera/
+
+### 7. missing-root-layout
+
+**Severity:** ERR
+
+**Tempting:** `app/index.tsx` exists but no `app/_layout.tsx`.
+
+**Why wrong:** Expo Router requires that the root layout renders a navigator (Stack, Tabs, Drawer, or Slot) on its FIRST render. A missing or conditional `_layout.tsx` produces the runtime error: "Attempted to navigate before mounting the Root Layout component".
+
+**Canonical:**
+
+```tsx
+// app/_layout.tsx
+import { Stack } from "expo-router";
+export default function RootLayout() {
+  return <Stack />;
+}
+```
+
+Source: https://docs.expo.dev/router/advanced/root-layout/
+
+### 8. navigationcontainer-in-expo-router
+
+**Severity:** ERR
+
+**Tempting:**
+
+```tsx
+import { NavigationContainer } from "@react-navigation/native";
+return <NavigationContainer>{children}</NavigationContainer>;
+```
+
+**Why wrong:** Expo Router instantiates its own `NavigationContainer` internally. Wrapping it again throws "Another navigator is already registered for this container".
+
+**Canonical:** Remove `NavigationContainer`. Use `<Stack />` / `<Tabs />` / `<Slot />` from `expo-router` inside `_layout.tsx`.
+
+Source: https://docs.expo.dev/router/migrate/from-react-navigation/
+
+### 9. createstacknavigator-in-expo-router
+
+**Severity:** ERR
+
+**Tempting:**
+
+```tsx
+const Stack = createStackNavigator();
+<Stack.Navigator>
+  <Stack.Screen name="Home" component={HomeScreen} />
+</Stack.Navigator>
+```
+
+**Why wrong:** Expo Router is file-based. `createStackNavigator` / `createBottomTabNavigator` are not compatible with the router's filesystem convention; routes are inferred from files in `app/`.
+
+**Canonical:** Move `HomeScreen` to `app/index.tsx`. Configure stack options via `<Stack.Screen options={{...}} />` inside `_layout.tsx` or per-file `<Stack.Screen options={...} />` from `expo-router`.
+
+Source: https://docs.expo.dev/router/basics/layout/#stack
+
+### 10. worklets-plugin-missing
+
+**Severity:** ERR
+
+**Tempting:**
+
+```js
+// babel.config.js
+module.exports = function (api) {
+  api.cache(true);
+  return {
+    presets: ["babel-preset-expo"],
+    plugins: ["react-native-reanimated/plugin"],
+  };
+};
+```
+
+**Why wrong:** Reanimated 4 (shipped with SDK 55) moved its Babel plugin into the new `react-native-worklets` package. The old `react-native-reanimated/plugin` path no longer exists and produces "Reanimated 2 failed to create a worklet" at runtime.
+
+**Canonical:**
+
+```js
+module.exports = function (api) {
+  api.cache(true);
+  return {
+    presets: ["babel-preset-expo"],
+    plugins: ["react-native-worklets/plugin"],
+  };
+};
+```
+
+The worklets plugin must be the LAST plugin in the list.
+
+Source: https://docs.swmansion.com/react-native-reanimated/docs/guides/migration-from-3.x/
+
+### 11. package-exports-cjs-esm-dual
+
+**Severity:** ERR
+
+**Tempting:** Adding a library that ships broken `package.json` "exports" (dual CJS/ESM) without verifying it loads under Metro.
+
+**Why wrong:** RN 0.79 enabled Metro's `package.json` "exports" resolver by default. Many older libs declare exports but their `.cjs` and `.mjs` entries diverge, producing "interop default" runtime crashes.
+
+**Canonical:** Bump the library to a version that publishes correct exports, or pin a known-good version. If urgent, opt out in `metro.config.js`:
+
+```js
+const { getDefaultConfig } = require("expo/metro-config");
+const config = getDefaultConfig(__dirname);
+config.resolver.unstable_enablePackageExports = false; // last resort
+module.exports = config;
+```
+
+Source: https://github.com/facebook/metro/issues/670
+
+### 12. classic-expo-cli
+
+**Severity:** ERR
+
+**Tempting:**
+
+```json
+// package.json
+{
+  "dependencies": { "expo-cli": "^6.0.0" },
+  "scripts": {
+    "start": "expo start",
+    "build": "expo build:android"
+  }
+}
+```
+
+**Why wrong:** The classic `expo-cli` (global) was deprecated in 2022 and removed for new projects. SDK 55 uses the local CLI `npx expo` and EAS Build/Submit/Update for native builds.
+
+**Canonical:**
+
+```json
+{
+  "scripts": {
+    "start": "npx expo start",
+    "android": "npx expo run:android",
+    "ios": "npx expo run:ios",
+    "build:android": "eas build -p android --profile production"
+  }
+}
+```
+
+Source: https://blog.expo.dev/the-new-expo-cli-f4250d8e3421
+
+### 13. missing-expo-notifications-plugin
+
+**Severity:** ERR
+
+**Tempting:** Using `expo-notifications` API without adding the config plugin to `app.config.ts`.
+
+**Why wrong:** CNG generates native code from the `plugins` array. If `expo-notifications` is not listed, the APNs entitlement is missing on iOS and `expo prebuild --clean` wipes any manual edits.
+
+**Canonical:**
+
+```ts
+// app.config.ts
+plugins: [
+  "expo-router",
+  [
+    "expo-notifications",
+    {
+      icon: "./assets/notification-icon.png",
+      color: "#ffffff",
+      defaultChannel: "default",
+    },
+  ],
+],
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/notifications/#configuration
+
+### 14. push-in-expo-go-android
+
+**Severity:** ERR
+
+**Tempting:** Testing remote push on Android in Expo Go.
+
+**Why wrong:** Remote push notifications on Android were removed from Expo Go in SDK 53. They require a development build via `eas build --profile development`.
+
+**Canonical:** Use `npx expo install expo-dev-client`, run `eas build -p android --profile development`, install the build on the device, then test remote push.
+
+Source: https://expo.dev/changelog/sdk-53
+
+### 15. splashscreen-no-hide
+
+**Severity:** ERR
+
+**Tempting:**
+
+```tsx
+import * as SplashScreen from "expo-splash-screen";
+SplashScreen.preventAutoHideAsync();
+// ... but never call SplashScreen.hideAsync()
+```
+
+**Why wrong:** `preventAutoHideAsync` blocks the splash from hiding. Without a matching `hideAsync`, the splash stays forever and the app appears frozen at launch.
+
+**Canonical:**
+
+```tsx
+SplashScreen.preventAutoHideAsync();
+const [loaded] = useFonts({ Inter: require("./assets/fonts/Inter.ttf") });
+const onLayout = useCallback(async () => {
+  if (loaded) await SplashScreen.hideAsync();
+}, [loaded]);
+if (!loaded) return null;
+return <View onLayout={onLayout}>...</View>;
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/splash-screen/
+
+### 16. missing-scheme-for-oauth
+
+**Severity:** ERR
+
+**Tempting:** Setting up `expo-auth-session` without a `scheme` in `app.config.ts`.
+
+**Why wrong:** Without `scheme`, the OAuth provider redirect cannot deep-link back into the app. The browser opens but the callback never reaches the JS bundle.
+
+**Canonical:**
+
+```ts
+// app.config.ts
+export default {
+  expo: {
+    scheme: "myapp",
+    // ...
+  },
+};
+```
+
+And use `AuthSession.makeRedirectUri({ scheme: "myapp" })`.
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/auth-session/#redirect-uri
+
+### 17. runtime-version-mismatch-on-native-change
+
+**Severity:** ERR
+
+**Tempting:**
+
+```ts
+// app.config.ts
+runtimeVersion: "1.0.0",
+```
+
+then bump a native dependency without touching `runtimeVersion`.
+
+**Why wrong:** Static `runtimeVersion` strings get out of sync the moment native code changes. EAS Update pushes JS to clients whose native shell does not match. App crashes on launch.
+
+**Canonical:**
+
+```ts
+runtimeVersion: { policy: "fingerprint" },
+```
+
+`policy: "fingerprint"` hashes every input that affects native code; updates are gated to matching builds automatically.
+
+Source: https://docs.expo.dev/eas-update/runtime-versions/#fingerprint-runtime-version-policy
+
+### 18. edge-to-edge-statusbar-overlap
+
+**Severity:** ERR
+
+**Tempting:** Targeting SDK 55 without using `SafeAreaView` / `useSafeAreaInsets` at the top of screens.
+
+**Why wrong:** SDK 53 enabled edge-to-edge by default on Android. SDK 55 keeps it enabled. Content draws under the status bar; top buttons become untouchable.
+
+**Canonical:**
+
+```tsx
+import { SafeAreaView } from "react-native-safe-area-context";
+return <SafeAreaView edges={["top"]}>...</SafeAreaView>;
+```
+
+Source: https://docs.expo.dev/develop/user-interface/safe-areas/
+
+### 19. manual-android-ios-edits
+
+**Severity:** ERR
+
+**Tempting:** Hand-editing `ios/MyApp/Info.plist` or `android/app/src/main/AndroidManifest.xml`.
+
+**Why wrong:** CNG (Continuous Native Generation) wipes `ios/` and `android/` on `npx expo prebuild --clean`. Manual edits silently disappear on the next build.
+
+**Canonical:** Express native config via a config plugin in `app.config.ts`:
+
+```ts
+plugins: [
+  [
+    "expo-build-properties",
+    {
+      ios: { deploymentTarget: "15.1" },
+      android: { compileSdkVersion: 35, targetSdkVersion: 35 },
+    },
+  ],
+],
+```
+
+For one-off entitlements, write a tiny config plugin under `plugins/`.
+
+Source: https://docs.expo.dev/workflow/continuous-native-generation/
+
+### 20. expo-permissions-import
+
+**Severity:** ERR
+
+**Tempting:**
+
+```ts
+import * as Permissions from "expo-permissions";
+await Permissions.askAsync(Permissions.CAMERA);
+```
+
+**Why wrong:** `expo-permissions` was deprecated in SDK 41 and removed entirely. Each module ships its own permission API.
+
+**Canonical:**
+
+```ts
+import { useCameraPermissions } from "expo-camera";
+import * as Location from "expo-location";
+await Location.requestForegroundPermissionsAsync();
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/permissions/ (redirect note)
+
+### 21. navigate-replaces-stacknav
+
+**Severity:** ERR
+
+**Tempting:**
+
+```tsx
+router.navigate("/feed");
+```
+
+after pushing several screens, expecting it to pop back to `/feed`.
+
+**Why wrong:** `router.navigate` is not a pop-to-existing helper. It follows React Navigation 7 navigate semantics, which may add a new screen rather than collapse the stack back to an existing one. If your intent is to surface a route that is already on the stack (and unwind the screens above it), reach for `router.dismissTo`. Reserve `router.navigate` for "go to this URL, I do not care whether the stack grows".
+
+**Canonical:**
+
+```tsx
+router.dismissTo("/feed");
+// or pop one
+router.back();
+// or replace
+router.replace("/feed");
+```
+
+Source: https://docs.expo.dev/router/reference/redirects/
+
+### 22. reanimated-3-with-sdk-55
+
+**Severity:** ERR
+
+**Tempting:**
+
+```json
+{ "dependencies": { "react-native-reanimated": "^3.10.0" } }
+```
+
+**Why wrong:** SDK 54 bumped Reanimated to 4.x. SDK 55 ships Reanimated 4.2.1. v3 will not build against RN 0.83 + the worklets plugin split.
+
+**Canonical:**
+
+```json
+{ "dependencies": { "react-native-reanimated": "~4.2.1", "react-native-worklets": "0.7.4" } }
+```
+
+Always run `npx expo install` so versions match the SDK 55 compatibility matrix.
+
+Source: https://github.com/expo/expo/blob/sdk-55/packages/expo/bundledNativeModules.json
+
+### 23. flashlist-v1-with-sdk-55
+
+**Severity:** ERR
+
+**Tempting:**
+
+```tsx
+import { FlashList } from "@shopify/flash-list";
+<FlashList data={items} estimatedItemSize={64} renderItem={...} />
+```
+
+with `"@shopify/flash-list": "^1.6.0"`.
+
+**Why wrong:** SDK 54+ ships FlashList 2.x which auto-measures. `estimatedItemSize` is a no-op (warning only) in v2, and v1 will not build against RN 0.83's New Architecture.
+
+**Canonical:**
+
+```tsx
+import { FlashList } from "@shopify/flash-list"; // v2
+<FlashList data={items} renderItem={({ item }) => <Row item={item} />} keyExtractor={(it) => it.id} />
+```
+
+Pin: `"@shopify/flash-list": "2.0.2"`.
+
+Source: https://shopify.github.io/flash-list/docs/v2-changes
+
+### 24. expo-file-system-classic-default-assumed
+
+**Severity:** ERR
+
+**Tempting:**
+
+```ts
+import * as FileSystem from "expo-file-system";
+await FileSystem.writeAsStringAsync(FileSystem.documentDirectory + "x.txt", "hi");
+```
+
+**Why wrong:** In SDK 54+, the default `expo-file-system` export is the NEW `File`/`Directory` API. The classic functional API moved to `expo-file-system/legacy`. The above call still exists only as a deprecated re-export.
+
+**Canonical (new API):**
+
+```ts
+import { File, Directory, Paths } from "expo-file-system";
+const file = new File(Paths.document, "x.txt");
+await file.write("hi");
+const text = await file.text();
+```
+
+If you must keep the old code working short-term:
+
+```ts
+import * as FileSystem from "expo-file-system/legacy";
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/filesystem/
+
+### 25. expo-av-imports
+
+**Severity:** ERR
+
+**Tempting:**
+
+```ts
+import { Video, Audio } from "expo-av";
+```
+
+**Why wrong:** `expo-av` was removed from Expo Go in SDK 55. The split modules `expo-video` and `expo-audio` are the supported APIs and are simpler to use.
+
+**Canonical:**
+
+```tsx
+import { useVideoPlayer, VideoView } from "expo-video";
+import { useAudioPlayer } from "expo-audio";
+
+const player = useVideoPlayer(uri, (p) => { p.play(); });
+return <VideoView player={player} style={{ flex: 1 }} contentFit="contain" />;
+```
+
+Source: https://expo.dev/changelog/sdk-55
+
+---
+
+## WARN
+
+### 26. rn-image-for-remote-content
+
+**Severity:** WARN
+
+**Tempting:**
+
+```tsx
+import { Image } from "react-native";
+<Image source={{ uri }} style={{ width: 200, height: 200 }} />
+```
+
+**Why wrong:** `react-native` `Image` has no built-in caching, no placeholder, no transition, no priority queue. For remote content `expo-image` is faster and uses less memory.
+
+**Canonical:**
+
+```tsx
+import { Image } from "expo-image";
+<Image
+  source={uri}
+  contentFit="cover"
+  cachePolicy="memory-disk"
+  transition={200}
+  placeholder={require("./assets/blurhash.png")}
+  style={{ width: 200, height: 200 }}
+/>;
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/image/
+
+### 27. resizemode-on-expo-image
+
+**Severity:** WARN
+
+**Tempting:**
+
+```tsx
+<Image source={...} resizeMode="cover" />
+```
+
+with `expo-image`.
+
+**Why wrong:** `resizeMode` is the `react-native` Image prop. `expo-image` uses `contentFit`. `resizeMode` is silently ignored.
+
+**Canonical:** `contentFit="cover" | "contain" | "fill" | "none" | "scale-down"`.
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/image/#contentfit
+
+### 28. react-native-fast-image-import
+
+**Severity:** WARN
+
+**Tempting:**
+
+```ts
+import FastImage from "react-native-fast-image";
+```
+
+**Why wrong:** `react-native-fast-image` is unmaintained (archived 2023) and not New-Architecture compatible. `expo-image` is the supported replacement and is faster on RN 0.83.
+
+**Canonical:** Replace with `expo-image` (see #26).
+
+Source: https://github.com/DylanVann/react-native-fast-image (archived)
+
+### 29. asyncstorage-for-kv
+
+**Severity:** WARN
+
+**Tempting:**
+
+```ts
+import AsyncStorage from "@react-native-async-storage/async-storage";
+await AsyncStorage.setItem("preferred_theme", "dark");
+```
+
+**Why wrong:** `AsyncStorage` is JSON-on-disk, single-file, no transactions. `expo-sqlite/kv-store` is the New-Architecture-native drop-in: same API, backed by SQLite WAL.
+
+**Canonical:**
+
+```ts
+import AsyncStorage from "expo-sqlite/kv-store";
+await AsyncStorage.setItem("preferred_theme", "dark");
+```
+
+Same surface, faster reads, atomic writes.
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/async-storage/
+
+### 30. animated-api-for-new-code
+
+**Severity:** WARN
+
+**Tempting:**
+
+```tsx
+import { Animated } from "react-native";
+const value = useRef(new Animated.Value(0)).current;
+Animated.timing(value, { toValue: 1, useNativeDriver: true }).start();
+```
+
+**Why wrong:** The legacy `Animated` API runs on the JS thread for most operations (only certain transforms use the native driver). Reanimated 4 worklets run on the UI thread.
+
+**Canonical:**
+
+```tsx
+import { useSharedValue, useAnimatedStyle, withTiming } from "react-native-reanimated";
+const opacity = useSharedValue(0);
+useEffect(() => { opacity.value = withTiming(1); }, []);
+const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
+```
+
+Source: https://docs.swmansion.com/react-native-reanimated/
+
+### 31. flatlist-for-large-lists
+
+**Severity:** WARN
+
+**Tempting:**
+
+```tsx
+<FlatList data={thousandItems} renderItem={...} />
+```
+
+**Why wrong:** `FlatList` is fine for short lists. For 200+ items, FlashList 2's recycling is significantly faster and more memory-efficient.
+
+**Canonical:** Use `FlashList` from `@shopify/flash-list` 2.x.
+
+Source: https://shopify.github.io/flash-list/
+
+### 32. flashlist-v1-estimateditemsize-carryover
+
+**Severity:** WARN
+
+**Tempting:**
+
+```tsx
+<FlashList data={items} estimatedItemSize={64} renderItem={...} />
+```
+
+with FlashList 2.x.
+
+**Why wrong:** FlashList 2 auto-measures item size on the JS thread. `estimatedItemSize` is a deprecated no-op in v2 and emits a warning on first render.
+
+**Canonical:** Remove `estimatedItemSize`. If you need stable indexes for sticky headers, add `getItemType`.
+
+Source: https://shopify.github.io/flash-list/docs/v2-changes
+
+### 33. useeffect-auth-redirect
+
+**Severity:** WARN
+
+**Tempting:**
+
+```tsx
+useEffect(() => {
+  if (!session) router.replace("/sign-in");
+}, [session]);
+```
+
+**Why wrong:** This pattern flashes the protected route for one frame, runs after layout, and double-redirects on hot reload. Expo Router 55 ships `Stack.Protected` which is declarative and pre-render gated.
+
+**Canonical:**
+
+```tsx
+// app/_layout.tsx
+<Stack>
+  <Stack.Protected guard={!!session}>
+    <Stack.Screen name="(app)" />
+  </Stack.Protected>
+  <Stack.Protected guard={!session}>
+    <Stack.Screen name="(auth)" />
+  </Stack.Protected>
+</Stack>
+```
+
+Source: https://docs.expo.dev/router/advanced/authentication/
+
+### 34. useroute-useparams-in-expo-router
+
+**Severity:** WARN
+
+**Tempting:**
+
+```tsx
+import { useRoute } from "@react-navigation/native";
+const route = useRoute();
+const id = route.params.id;
+```
+
+**Why wrong:** Expo Router supplies `useLocalSearchParams`. `useRoute` works but bypasses the typed routes generator.
+
+**Canonical:**
+
+```tsx
+import { useLocalSearchParams } from "expo-router";
+const { id } = useLocalSearchParams<{ id: string }>();
+```
+
+Source: https://docs.expo.dev/router/reference/hooks/
+
+### 35. untyped-search-params
+
+**Severity:** WARN
+
+**Tempting:**
+
+```tsx
+const params = useLocalSearchParams();
+const id: string = params.id; // unsafe
+```
+
+**Why wrong:** Without the type parameter, `params.id` is `string | string[] | undefined`. Production crashes from `id.toLowerCase()` calls trace back here.
+
+**Canonical:**
+
+```tsx
+const { id } = useLocalSearchParams<{ id: string }>();
+```
+
+Source: https://docs.expo.dev/router/reference/typed-routes/
+
+### 36. react-native-fs-import
+
+**Severity:** WARN
+
+**Tempting:**
+
+```ts
+import RNFS from "react-native-fs";
+await RNFS.writeFile(RNFS.DocumentDirectoryPath + "/x.txt", "hi", "utf8");
+```
+
+**Why wrong:** `react-native-fs` is bare-RN-only and not maintained for the New Architecture. Expo ships first-party `expo-file-system` with the same surface.
+
+**Canonical:**
+
+```ts
+import { File, Paths } from "expo-file-system";
+const file = new File(Paths.document, "x.txt");
+await file.write("hi");
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/filesystem/
+
+### 37. react-native-vector-icons-import
+
+**Severity:** WARN
+
+**Tempting:**
+
+```ts
+import Icon from "react-native-vector-icons/MaterialIcons";
+```
+
+**Why wrong:** `react-native-vector-icons` requires manual native linking and `app.json` font registration. `@expo/vector-icons` ships the same icon sets pre-linked through CNG.
+
+**Canonical:**
+
+```tsx
+import { MaterialIcons } from "@expo/vector-icons";
+<MaterialIcons name="home" size={24} color="black" />;
+```
+
+Source: https://docs.expo.dev/guides/icons/
+
+### 38. enablehermes-jsengine-noop
+
+**Severity:** WARN
+
+**Tempting:**
+
+```json
+// app.json
+{ "expo": { "jsEngine": "hermes" } }
+```
+
+**Why wrong:** Hermes has been the default since SDK 49 / SDK 53. Setting `jsEngine: "hermes"` is a no-op; setting `jsEngine: "jsc"` opts INTO a deprecated engine. The flag should be omitted entirely.
+
+**Canonical:** Omit the field.
+
+Source: https://docs.expo.dev/guides/using-hermes/
+
+### 39. bridgeless-explicit
+
+**Severity:** WARN
+
+**Tempting:**
+
+```json
+{ "expo": { "newArchEnabled": true, "experiments": { "bridgeless": true } } }
+```
+
+**Why wrong:** SDK 55 dropped Legacy Architecture entirely. The New Architecture (bridgeless) is the only mode. Setting `newArchEnabled: true` is noise; setting it to `false` will be ignored.
+
+**Canonical:** Omit both fields.
+
+Source: https://expo.dev/changelog/sdk-55
+
+### 40. missing-expo-dev-client
+
+**Severity:** WARN
+
+**Tempting:** Using a native module that is not part of Expo Go (e.g. a custom config plugin or third-party native package) and continuing to develop in Expo Go.
+
+**Why wrong:** Expo Go ships a fixed set of native modules. Anything outside that set throws "Unimplemented module" at runtime. The fix is a development build.
+
+**Canonical:**
+
+```sh
+npx expo install expo-dev-client
+eas build -p ios --profile development
+eas build -p android --profile development
+```
+
+Source: https://docs.expo.dev/develop/development-builds/introduction/
+
+### 41. useanimatedreaction-vs-render-read
+
+**Severity:** WARN
+
+**Tempting:**
+
+```tsx
+const value = useSharedValue(0);
+return <Text>{value.value}</Text>;
+```
+
+**Why wrong:** Reading `.value` outside a worklet / animated style is undefined behavior. The render thread sees a stale snapshot and never re-runs when the shared value changes.
+
+**Canonical:**
+
+```tsx
+import Animated, { useAnimatedProps } from "react-native-reanimated";
+const AnimatedText = Animated.createAnimatedComponent(TextInput);
+const props = useAnimatedProps(() => ({ text: String(value.value) }));
+return <AnimatedText editable={false} animatedProps={props} />;
+```
+
+Or pipe to React state via `useAnimatedReaction` + `runOnJS`.
+
+Source: https://docs.swmansion.com/react-native-reanimated/docs/core/useSharedValue
+
+---
+
+## NIT
+
+### 42. app-json-not-app-config-ts
+
+**Severity:** NIT
+
+**Tempting:** Keeping `app.json` only.
+
+**Why wrong:** Static JSON cannot read `process.env` or branch on `EAS_BUILD_PROFILE`. Almost every real project needs at least one env-driven value (API base, OAuth client id).
+
+**Canonical:** Migrate to `app.config.ts`:
+
+```ts
+import { ExpoConfig } from "expo/config";
+const config: ExpoConfig = {
+  name: "MyApp",
+  slug: "myapp",
+  scheme: "myapp",
+  runtimeVersion: { policy: "fingerprint" },
+  extra: { apiBase: process.env.API_BASE },
+  plugins: ["expo-router", "expo-secure-store"],
+};
+export default config;
+```
+
+Source: https://docs.expo.dev/workflow/configuration/
+
+### 43. usefonts-without-render-gate
+
+**Severity:** NIT
+
+**Tempting:**
+
+```tsx
+useFonts({ Inter: require("./assets/fonts/Inter.ttf") });
+return <Text style={{ fontFamily: "Inter" }}>hi</Text>;
+```
+
+**Why wrong:** First paint uses the system font (FOUT) and shifts when Inter loads (CLS). Gate the render on `loaded`.
+
+**Canonical:**
+
+```tsx
+const [loaded] = useFonts({ Inter: require("./assets/fonts/Inter.ttf") });
+if (!loaded) return null;
+return <Text style={{ fontFamily: "Inter" }}>hi</Text>;
+```
+
+Source: https://docs.expo.dev/versions/v55.0.0/sdk/font/
+
+### 44. tsconfig-not-extending-expo
+
+**Severity:** NIT
+
+**Tempting:**
+
+```json
+{ "compilerOptions": { "strict": true, "jsx": "react-jsx" } }
+```
+
+**Why wrong:** Without `expo/tsconfig.base` you lose Metro-aligned `moduleResolution`, JSX runtime alignment, and the generated typed-routes types under `.expo/types/router.d.ts`.
+
+**Canonical:**
+
+```json
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": { "strict": true },
+  "include": [".expo/types/**/*.ts", "**/*.ts", "**/*.tsx"]
+}
+```
+
+Source: https://docs.expo.dev/guides/typescript/
+
+### 45. setstate-from-worklet
+
+**Severity:** NIT
+
+**Tempting:**
+
+```tsx
+const pan = Gesture.Pan().onUpdate((e) => {
+  setX(e.translationX); // setState from worklet
+});
+```
+
+**Why wrong:** Worklets run on the UI thread. React state setters live on the JS thread. Calling them directly produces silent state-update drops.
+
+**Canonical:**
+
+```tsx
+import { runOnJS } from "react-native-reanimated";
+const pan = Gesture.Pan().onUpdate((e) => {
+  runOnJS(setX)(e.translationX);
+});
+```
+
+Source: https://docs.swmansion.com/react-native-reanimated/docs/threading/runOnJS
+
+---
+
+## Severity summary
+
+- CRIT: 4
+- ERR: 21
+- WARN: 16
+- NIT: 4
+- Total: 45

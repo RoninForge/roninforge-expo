@@ -1,0 +1,172 @@
+---
+description: Expo Router 55 file-based routing conventions for the app/ tree. Covers _layout.tsx, route groups (parens), dynamic segments [id], catch-all [...rest], +not-found, +native-intent, +html, +api server routes, typed routes via experiments.typedRoutes, Stack.Protected auth gating, useLocalSearchParams typed access, redirect helpers (router.push, router.replace, router.dismissTo, router.back), and the screen-options-via-Stack.Screen pattern. Refuses NavigationContainer, createStackNavigator, useRoute, useNavigation.navigate from React Navigation when Expo Router is in use.
+globs: app/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Expo Router 55 File Conventions
+
+Expo Router infers routes from files under `app/`. Filenames are the URL. Folders nest. The router wraps its own `NavigationContainer`; do not add another one.
+
+## File naming
+
+| File | URL | Purpose |
+|------|-----|---------|
+| `app/index.tsx` | `/` | Home screen |
+| `app/about.tsx` | `/about` | Static route |
+| `app/post/[id].tsx` | `/post/:id` | Dynamic segment |
+| `app/post/[...rest].tsx` | `/post/*` | Catch-all |
+| `app/(tabs)/_layout.tsx` | n/a | Tab group layout (parens = no URL segment) |
+| `app/(tabs)/index.tsx` | `/` | Home tab (grouped) |
+| `app/+not-found.tsx` | 404 | Fallback for unmatched routes |
+| `app/+html.tsx` | n/a | Custom HTML wrapper (web) |
+| `app/+native-intent.tsx` | n/a | Cold-start deep-link intent handler |
+| `app/api/health+api.ts` | `/api/health` | Server route (web `output: "server"` only) |
+
+## Root layout
+
+`app/_layout.tsx` MUST render a navigator on first render. The router uses this as the mount point for all routes. See anti-pattern #7.
+
+```tsx
+import { Stack } from "expo-router";
+import { useFonts } from "expo-font";
+import * as SplashScreen from "expo-splash-screen";
+import { useEffect } from "react";
+
+// Module scope, NOT inside the component (otherwise the splash auto-hides
+// on the first render and you see a frame of unstyled UI).
+SplashScreen.preventAutoHideAsync();
+
+export default function RootLayout() {
+  const [loaded, error] = useFonts({
+    Inter: require("../assets/fonts/Inter-Regular.ttf"),
+  });
+
+  useEffect(() => {
+    if (loaded || error) {
+      // Fire-and-forget is fine in practice; wrap in try/finally if you log
+      // splash failures upstream.
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [loaded, error]);
+
+  // Gate render so the first paint already has the typeface (avoids FOUT / CLS).
+  if (!loaded && !error) return null;
+
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="+not-found" options={{ title: "Not found" }} />
+    </Stack>
+  );
+}
+```
+
+## Route groups
+
+Folders wrapped in parens do NOT appear in the URL. Used to share a layout across screens without nesting the path.
+
+```
+app/
+  (tabs)/
+    _layout.tsx     # Tabs navigator
+    index.tsx       # / (home tab)
+    profile.tsx     # /profile
+  (auth)/
+    _layout.tsx     # Auth stack
+    sign-in.tsx     # /sign-in
+```
+
+## Dynamic segments
+
+Use `[name].tsx` for dynamic segments and `[...rest].tsx` for catch-alls. Type the params:
+
+```tsx
+// app/post/[id].tsx
+import { useLocalSearchParams } from "expo-router";
+export default function Post() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  return <Text>Post {id}</Text>;
+}
+```
+
+See anti-patterns #34 (useRoute), #35 (untyped params).
+
+## Server routes (+api)
+
+`app/api/health+api.ts` exports HTTP method handlers that return a `Response`. Only active when `app.config.ts` sets `web.output: "server"`.
+
+```ts
+export async function GET(req: Request) {
+  return Response.json({ ok: true, time: Date.now() });
+}
+export async function POST(req: Request) {
+  const body = await req.json();
+  return new Response(JSON.stringify({ received: body }), {
+    status: 201,
+    headers: { "content-type": "application/json" },
+  });
+}
+```
+
+Return a `Response` object (or `Response.json(...)`). Returning a plain object is undefined behavior.
+
+## Typed routes
+
+Enable in `app.config.ts`:
+
+```ts
+experiments: { typedRoutes: true }
+```
+
+The router generates `.expo/types/router.d.ts` after the next `npx expo start`. Add the path to `tsconfig.json`:
+
+```json
+{ "extends": "expo/tsconfig.base", "include": [".expo/types/**/*.ts", "**/*.ts", "**/*.tsx"] }
+```
+
+After enabling, `<Link href="/post/[id]" />` and `router.push("/post/[id]")` autocomplete.
+
+## Stack.Protected (auth gating)
+
+Replaces the `useEffect + router.replace` pattern. See anti-pattern #33.
+
+```tsx
+// app/_layout.tsx
+import { Stack } from "expo-router";
+import { useSession } from "../lib/auth";
+
+export default function RootLayout() {
+  const { session } = useSession();
+  return (
+    <Stack>
+      <Stack.Protected guard={!!session}>
+        <Stack.Screen name="(app)" />
+      </Stack.Protected>
+      <Stack.Protected guard={!session}>
+        <Stack.Screen name="(auth)" />
+      </Stack.Protected>
+    </Stack>
+  );
+}
+```
+
+## Navigation helpers
+
+```tsx
+import { router, Link } from "expo-router";
+router.push("/feed");           // push (always pushes; see anti-pattern #21)
+router.replace("/sign-in");     // swap
+router.back();                  // pop one
+router.dismissTo("/feed");      // pop until /feed is top of stack
+<Link href="/post/abc">Go</Link>
+```
+
+## Refuses
+
+- `NavigationContainer` from `@react-navigation/native` (see #8)
+- `createStackNavigator` / `createBottomTabNavigator` (see #9)
+- `useRoute` / `useNavigation` (see #34)
+- Default exports from `+api.ts` files (export named methods `GET`/`POST` instead)
+
+Source: https://docs.expo.dev/router/introduction/

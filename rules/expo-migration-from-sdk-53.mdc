@@ -1,0 +1,153 @@
+---
+description: Stage-by-stage migration from Expo SDK 51, 52, 53, or 54 to SDK 55. Bumps expo to ~55.0.0 and runs npx expo install --fix to align all bundled native modules. Swaps react-native-reanimated/plugin for react-native-worklets/plugin in babel.config.js. Updates FlashList from v1 syntax (estimatedItemSize) to v2 (auto-measured). Migrates expo-file-system call sites either to the new File/Directory API or to the explicit /legacy import. Splits expo-av into expo-video and expo-audio. Removes newArchEnabled and jsEngine flags (no-ops; Legacy Architecture is gone in SDK 55). Bumps runtimeVersion to fingerprint policy. Publishes via eas update --auto.
+globs: babel.config.{js,ts},app/**/*.{ts,tsx},components/**/*.{ts,tsx},package.json,app.config.{ts,js},app.json
+alwaysApply: false
+---
+
+# Migrate from SDK 51 / 52 / 53 / 54 to SDK 55
+
+The full SDK 55 release notes are at https://expo.dev/changelog/sdk-55. This rule covers the LLM-actionable diffs.
+
+## 1. Bump expo and align bundled modules
+
+```sh
+npx expo install expo@~55.0.0
+npx expo install --fix
+```
+
+`--fix` reads `node_modules/expo/bundledNativeModules.json` and updates every bundled module (react-native, react, expo-router, react-native-reanimated, react-native-worklets, react-native-gesture-handler, @shopify/flash-list, expo-camera, expo-file-system, expo-video, expo-audio, etc.) to its SDK 55-matched version.
+
+Source: https://github.com/expo/expo/blob/sdk-55/packages/expo/bundledNativeModules.json
+
+## 2. Babel: worklets plugin
+
+Reanimated 4 moved the Babel plugin to `react-native-worklets`.
+
+```diff
+// babel.config.js
+ module.exports = function (api) {
+   api.cache(true);
+   return {
+     presets: ["babel-preset-expo"],
+-    plugins: ["react-native-reanimated/plugin"],
++    plugins: ["react-native-worklets/plugin"], // must be last
+   };
+ };
+```
+
+See anti-pattern #10.
+
+## 3. FlashList: v1 -> v2
+
+```diff
+-<FlashList data={items} estimatedItemSize={64} renderItem={...} />
++<FlashList data={items} renderItem={...} keyExtractor={(i) => i.id} />
+```
+
+Remove `estimatedItemSize`, `estimatedFirstItemOffset`. For mixed item types, add `getItemType`. See anti-patterns #23, #32.
+
+## 4. expo-file-system: classic -> new API
+
+The default export is now the `File`/`Directory` API. Choose one of:
+
+A. Migrate to the new API:
+
+```diff
+-import * as FileSystem from "expo-file-system";
+-await FileSystem.writeAsStringAsync(FileSystem.documentDirectory + "x.txt", "hi");
++import { File, Paths } from "expo-file-system";
++const file = new File(Paths.document, "x.txt");
++await file.write("hi");
+```
+
+B. Defer migration by importing the legacy export explicitly:
+
+```diff
+-import * as FileSystem from "expo-file-system";
++import * as FileSystem from "expo-file-system/legacy";
+```
+
+See anti-pattern #24.
+
+## 5. expo-av: split into expo-video and expo-audio
+
+```diff
+-import { Video, Audio } from "expo-av";
++import { useVideoPlayer, VideoView } from "expo-video";
++import { useAudioPlayer } from "expo-audio";
+```
+
+Rewrite call sites. `expo-av` is removed from Expo Go in SDK 55.
+
+```sh
+npx expo install expo-video expo-audio
+npm uninstall expo-av
+```
+
+See anti-pattern #25.
+
+## 6. Drop newArchEnabled / jsEngine
+
+```diff
+ {
+   "expo": {
+-    "newArchEnabled": true,
+-    "jsEngine": "hermes",
+     ...
+   }
+ }
+```
+
+Legacy Architecture is removed in SDK 55. Hermes has been the default since SDK 49. See anti-patterns #38, #39.
+
+## 7. runtimeVersion: string -> fingerprint policy
+
+```diff
+ {
+   "expo": {
+-    "runtimeVersion": "1.0.0",
++    "runtimeVersion": { "policy": "fingerprint" },
+   }
+ }
+```
+
+See anti-pattern #17.
+
+## 8. expo-cli -> npx expo + eas
+
+```diff
+ "scripts": {
+-  "start": "expo start",
+-  "android": "expo run:android",
+-  "build:android": "expo build:android"
++  "start": "npx expo start",
++  "android": "npx expo run:android",
++  "build:android": "eas build -p android --profile production"
+ }
+```
+
+And remove `"expo-cli": "^6.0.0"` from `dependencies`. See anti-pattern #12.
+
+## 9. Migrate Camera, useAnimatedGestureHandler, expo-permissions
+
+If you are still on SDK 51, you may also need:
+
+- `Camera` from `expo-camera` -> `CameraView` (anti-pattern #6)
+- `useAnimatedGestureHandler` -> `GestureDetector` + `Gesture.Pan` (anti-pattern #5)
+- `expo-permissions` -> per-module APIs (anti-pattern #20)
+- `react-native-fast-image` -> `expo-image` (anti-pattern #28)
+- `react-native-vector-icons` -> `@expo/vector-icons` (anti-pattern #37)
+- `react-native-fs` -> `expo-file-system` (anti-pattern #36)
+
+## 10. Verify and publish
+
+```sh
+npx expo-doctor
+npx tsc --noEmit
+eas build -p ios --profile preview
+eas update --auto
+```
+
+`expo-doctor` flags remaining mismatched versions and missing config plugin entries.
+
+Source: https://docs.expo.dev/upgrading-expo-sdk-walkthrough/
